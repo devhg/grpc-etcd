@@ -3,23 +3,24 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"time"
 
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/resolver"
 
-	etcdemo "github.com/devhg/etcd-grpc"
-	pb "github.com/devhg/etcd-grpc/example/proto"
+	discovery "github.com/devhg/etcd-grpc"
+	pb "github.com/devhg/etcd-grpc/example/server/proto"
 )
 
-func main() {
-	r := etcdemo.NewResolver([]string{
-		"127.0.0.1:2379",
-		"127.0.0.1:22379",
-		"127.0.0.1:32379",
-	}, "g.srv.mail")
+var etcdAddrs = []string{"127.0.0.1:123", "127.0.0.1:22379", "127.0.0.1:32379"}
 
+func main() {
+	logger, _ := zap.NewProduction()
+	defer logger.Sync()
+	sugar := logger.Sugar()
+
+	r := discovery.NewResolver(etcdAddrs, "g.srv.mail", logger)
 	resolver.Register(r)
 
 	// https://github.com/grpc/grpc/blob/master/doc/naming.md
@@ -28,7 +29,8 @@ func main() {
 	ctx, _ := context.WithTimeout(context.Background(), 3*time.Second)
 	addr := fmt.Sprintf("%s:///%s", r.Scheme(), "g.srv.mail" /*g.srv.mail经测试，这个可以随便写，底层只是取scheme对应的Build对象*/)
 
-	conn, err := grpc.DialContext(ctx, addr, grpc.WithInsecure(),
+	conn, err := grpc.DialContext(ctx, addr,
+		grpc.WithInsecure(),
 		// grpc.WithBalancerName(roundrobin.Name),
 		// 指定初始化round_robin => balancer (后续可以自行定制balancer和 register、resolver 同样的方式)
 		grpc.WithDefaultServiceConfig(`{"loadBalancingConfig": [{"round_robin":{}}]}`),
@@ -36,11 +38,11 @@ func main() {
 
 	// 这种方式也行
 	// conn, err := grpc.Dial(addr, grpc.WithInsecure(), grpc.WithBalancerName("round_robin"))
-	// conn, err := grpc.Dial(":8972", grpc.WithInsecure())
-	
+
 	if err != nil {
-		log.Fatalf("failed to dial: %v", err)
+		sugar.Fatalf("failed to dial: %v", err)
 	}
+	defer conn.Close()
 
 	/*conn, err := grpc.Dial(
 	      fmt.Sprintf("%s://%s/%s", "consul", GetConsulHost(), s.Name),
@@ -54,15 +56,14 @@ func main() {
 	  //原文链接：https://blog.csdn.net/qq_35916684/article/details/104055246
 	*/
 
-	if err != nil {
-		panic(err)
-	}
-
 	c := pb.NewMailServiceClient(conn)
-
-	resp, err := c.SendMail(context.TODO(), &pb.MailRequest{
-		Mail: "qq@mail.com",
-		Text: "test,test",
-	})
-	log.Print(resp)
+	// 进行十次数据请求
+	for i := 0; i < 10; i++ {
+		resp, err := c.SendMail(context.Background(), &pb.MailRequest{Mail: "a@b.c", Text: "你好！"})
+		if err != nil {
+			sugar.Fatalf("say hello failed %v %v", err, resp)
+		}
+		sugar.Info(resp)
+		time.Sleep(100 * time.Millisecond)
+	}
 }
